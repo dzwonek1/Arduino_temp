@@ -1,0 +1,125 @@
+#include <Arduino.h>
+#include <WiFiS3.h>             // Do obsługi Wi-Fi w UNO R4 WiFi
+#include <WiFiSSLClient.h>      // Klient HTTPS (TLS)
+
+// Biblioteki do DS18B20
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// ----- KONFIGURACJA Wi-Fi -----
+#define WIFI_SSID     ""
+#define WIFI_PASSWORD ""
+
+// ----- KONFIGURACJA FIREBASE -----
+const char* FIREBASE_HOST = "arduino-3d5bb-default-rtdb.europe-west1.firebasedatabase.app";
+String firebasePath = "/test/temperature.json"; 
+// np. /test/temperature.json?auth=XYZ jeśli masz token
+
+// ----- PIN DS18B20 -----
+#define DS18B20_PIN 4
+OneWire oneWire(DS18B20_PIN);
+DallasTemperature ds18b20(&oneWire);
+
+// Interwał wysyłania (ms) - 30 sekund
+unsigned long interval = 30000;
+unsigned long prevMillis = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Inicjalizacja DS18B20
+  ds18b20.begin();
+
+  // Pierwsze (opcjonalne) połączenie z Wi-Fi:
+  Serial.println("[SETUP] Łączenie z Wi-Fi pierwszy raz...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[SETUP] Połączono! IP: " + WiFi.localIP().toString());
+  Serial.println("[INFO] Start programu...");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - prevMillis >= interval) {
+    prevMillis = currentMillis;
+
+    // --- Odczyt temperatury z DS18B20 ---
+    ds18b20.requestTemperatures();       
+    float temperatureC = ds18b20.getTempCByIndex(0);
+
+    if (temperatureC == DEVICE_DISCONNECTED_C) {
+      Serial.println("[DS18B20] Błąd: czujnik rozłączony?");
+      return; // Anulujemy tę iterację, nie wysyłamy do Firebase
+    }
+
+    Serial.print("\n[INFO] Zmierzona temperatura: ");
+    Serial.print(temperatureC);
+    Serial.println(" *C");
+
+    // Wysyłamy do Firebase z "resetem" Wi-Fi
+    sendToFirebaseWithWifiReset(temperatureC);
+  }
+}
+
+void sendToFirebaseWithWifiReset(float temperature) {
+  // 1. Rozłącz Wi-Fi (brutalny sposób, ale skuteczny przy problemach TLS)
+  Serial.println("[WIFI] Rozłączam Wi-Fi...");
+  WiFi.disconnect(); 
+  delay(200);
+
+  // 2. Po chwili ponownie łączymy się
+  Serial.println("[WIFI] Ponowne łączenie...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[WIFI] Ponownie połączono. IP: " + WiFi.localIP().toString());
+
+  // 3. Tworzymy nowy obiekt klienta SSL
+  WiFiSSLClient client;
+
+  // 4. Próba połączenia z Firebase na porcie 443
+  Serial.println("[HTTPS] Łączenie z Firebase...");
+  if (client.connect(FIREBASE_HOST, 443)) {
+    Serial.println("[HTTPS] Połączenie OK.");
+
+    // 5. Budowa żądania PUT (nadpisujemy /test/temperature)
+    String jsonData = String(temperature, 2); // np. "23.45"
+
+    String request =
+      String("PUT ") + firebasePath + " HTTP/1.1\r\n" +
+      "Host: " + FIREBASE_HOST + "\r\n" +
+      "Content-Type: application/json\r\n" +
+      "Content-Length: " + String(jsonData.length()) + "\r\n" +
+      "Connection: close\r\n\r\n" +
+      jsonData + "\r\n";
+
+    // 6. Wysyłamy
+    client.print(request);
+
+    // 7. Odczyt odpowiedzi
+    unsigned long timeout = millis() + 3000;
+    while (!client.available() && millis() < timeout) {
+      delay(10);
+    }
+    while (client.available()) {
+      String line = client.readStringUntil('\r');
+      Serial.print(line);
+    }
+
+    // 8. Zamykamy połączenie
+    client.stop();
+    Serial.println("\n[HTTPS] Połączenie zakończone.");
+  } 
+  else {
+    Serial.println("[HTTPS] Błąd połączenia (TLS handshake?).");
+    client.stop();
+  }
+
+  Serial.println("---------------------------------------");
+}
