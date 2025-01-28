@@ -11,7 +11,7 @@
 #define WIFI_PASSWORD ""
 
 // ----- KONFIGURACJA FIREBASE -----
-const char* FIREBASE_HOST = "arduino-3d5bb-default-rtdb.europe-west1.firebasedatabase.app";
+const char* FIREBASE_HOST = "";
 String firebasePath = "/test/temperature.json"; 
 // np. /test/temperature.json?auth=XYZ jeśli masz token
 
